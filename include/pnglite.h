@@ -32,9 +32,12 @@ enum pnglite_format {
     PNGLITE_rgba,
 };
 
+#include <stdint.h>
+#include <string.h>
+
 typedef unsigned char pnglite_uc;
 typedef unsigned short pnglite_us;
-typedef unsigned int pnglite_uint32;
+typedef uint32_t pnglite_uint32;
 
 #ifdef __cplusplus
 extern "C" {
@@ -100,20 +103,26 @@ extern "C" {
    #define pnglite_inline __forceinline
 #endif
 
-#include <stddef.h>
-#include <string.h>
+#define PNGLITE__CHUNK_TYPE(a,b,c,d)  (((unsigned) (a) << 24) + ((unsigned) (b) << 16) + ((unsigned) (c) << 8) + (unsigned) (d))
 
-typedef struct pnglite_io_ctx {
-    int      (*read)  (void *user,char *data,int size);
-    void     (*skip)  (void *user,int n);
-    int      (*eof)   (void *user);
-} pnglite_io_ctx_t;
+#define PNGLITE__ZFAST_BITS 9
+#define PNGLITE__ZFAST_MASK ((1 << PNGLITE__ZFAST_BITS) - 1)
+
+#define PNGLITE__BYTECAST(x) ((pnglite_uc)((x) & 255))
+
+#include <stddef.h>
 
 typedef struct pnglite_ctx {
-    pnglite_io_ctx_t io_ctx;
-
     pnglite_uc* image_data;
+    pnglite_uc* image_data_start;
     pnglite_uc* image_data_end;
+
+    pnglite_uc* image_data_original;
+    pnglite_uc* image_data_original_end;
+
+    pnglite_uint32 image_x, image_y, image_n;
+    int image_out_n;
+    pnglite_uint32 buflen;
 } pnglite_ctx_t;
 
 typedef struct pnglite__result_info {
@@ -138,17 +147,96 @@ enum {
     PNGLITE_ORDER_BGR,
 };
 
+enum
+{
+    PNGLITE__SCAN_load = 0,
+    PNGLITE__SCAN_type,
+    PNGLITE__SCAN_header
+};
+
+enum {
+    PNGLITE_FILTER_none = 0,
+    PNGLITE_FILTER_sub = 1,
+    PNGLITE_FILTER_up = 2,
+    PNGLITE_FILTER_avg = 3,
+    PNGLITE_FILTER_paeth = 4,
+    PNGLITE_FILTER_avg_first,
+    PNGLITE_FILTER_paeth_first
+};
+
+static pnglite_uc pnglite__first_row_filter[5] = {
+    PNGLITE_FILTER_none,
+    PNGLITE_FILTER_sub,
+    PNGLITE_FILTER_none,
+    PNGLITE_FILTER_avg_first,
+    PNGLITE_FILTER_paeth_first
+};
+
+typedef struct pnglite__zhuffman {
+    pnglite_us fast[1 << PNGLITE__ZFAST_BITS];
+    pnglite_us firstcode[16];
+    int maxcode[17];
+    pnglite_us firstsymbol[16];
+    pnglite_uc size[288];
+    pnglite_us value[288];
+} pnglite__zhuffman_t;
+
+typedef struct pnglite__zbuf {
+    pnglite_uc *zbuffer, *zbuffer_end;
+    pnglite_uint32 num_bits;
+    pnglite_uint32 code_buffer;
+
+    char *zout;
+    char *zout_start;
+    char *zout_end;
+    int z_expandable;
+
+    pnglite__zhuffman_t z_length, z_distance;
+} pnglite__zbuf_t;
+
 static const char *pnglite__failure_reason;
 
 static void pnglite__ctx_init(pnglite_ctx_t *ctx, pnglite_uc *buffer, pnglite_uint32 len);
+static void pnglite__refill_buffer(pnglite_ctx_t *ctx);
+static void pnglite__skip(pnglite_ctx_t *ctx, pnglite_uint32 n);
 static pnglite__chunk_t pnglite__get_chunk_header(pnglite_ctx_t *ctx);
 static int pnglite__check_png_header(pnglite_ctx_t *ctx);
 static int pnglite__err(const char *reason);
-static void pnglite__load_main(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite__result_info_t *result_info);
+static void* pnglite__load_main(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components, pnglite__result_info_t *result_info);
+static void *pnglite__load_png(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components, pnglite__result_info_t *result_info);
+static int pnglite__parse_png(pnglite__png_t *png, pnglite_uint32 scan, pnglite_uint32 requested_components);
+static void pnglite__fill_bits(pnglite__zbuf_t *z);
+static int pnglite__parse_zlib_header(pnglite__zbuf_t *a);
+static int pnglite__zexpand(pnglite__zbuf_t *z, char *zout, pnglite_uint32 n);
+static int pnglite__parse_uncompressed_block(pnglite__zbuf_t *z);
+static int pnglite__zbuild_huffman(pnglite__zhuffman_t *z, pnglite_uc *sizelist, pnglite_uint32 num);
+static int pnglite__zhuffman_decode_slowpath(pnglite__zbuf_t *a, pnglite__zhuffman_t *z);
+static int pnglite__zhuffman_decode(pnglite__zbuf_t *a, pnglite__zhuffman_t *z);
+static int pnglite__compute_huffman_codes(pnglite__zbuf_t *a);
+static int pnglite__parse_huffman_block(pnglite__zbuf_t *a);
+static int pnglite__parse_zlib(pnglite__zbuf_t *a, int parse_header);
+static int pnglite__do_zlib(pnglite__zbuf_t *a, char *obuf, int olen, int exp, int parse_header);
+static int pnglite__create_png_image_raw(pnglite__png_t *png, pnglite_uc *raw, pnglite_uint32 raw_len, int out_n, pnglite_uint32 x, pnglite_uint32 y, int depth, int color);
+static int pnglite__create_png_image(pnglite__png_t *png, pnglite_uc *image_data, pnglite_uint32 image_data_len, int out_n, int depth, int color);
+static void *pnglite__do_png(pnglite__png_t *png, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *n, pnglite_uint32 requested_components, pnglite__result_info_t *result_info);
+static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_n, pnglite_uint32 requested_components, pnglite_uint32 x, pnglite_uint32 y);
+static int pnglite__getn(pnglite_ctx_t *ctx, pnglite_uc *buffer, pnglite_uint32 n);
+static pnglite_uc pnglite__compute_y(int r, int g, int b);
+static int pnglite__paeth(int a, int b, int c);
 
+pnglite_inline static pnglite_uc *pnglite__load_8bit(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 pnglite_inline static pnglite_uc pnglite__get8(pnglite_ctx_t *ctx);
+pnglite_inline static pnglite_uc pnglite__zget8(pnglite__zbuf_t *z);
+pnglite_inline static pnglite_uint32 pnglite__zreceive(pnglite__zbuf_t *z, int n);
+pnglite_inline static int pnglite__bitreverse16(int n);
+pnglite_inline static int pnglite__bit_reverse(int v, int bits);
+static pnglite_us pnglite__get16be(pnglite_ctx_t *ctx);
+static pnglite_uint32 pnglite__get32be(pnglite_ctx_t *ctx);
 
-PNGLITEDEF pnglite_uc* pnglite_load_from_memory(pnglite_uc* buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components);
+PNGLITEDEF pnglite_uc* pnglite_load_from_memory(pnglite_uc* buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+PNGLITEDEF pnglite_uc *pnglite_load(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+PNGLITEDEF char *pnglite_zlib_decode_malloc_guessize_headerflag(const char *buffer, int len, int initial_size, int *outlen, int parse_header);
 
 #ifdef __cplusplus
 }
