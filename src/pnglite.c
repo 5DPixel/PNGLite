@@ -93,15 +93,93 @@ static void pnglite__skip(pnglite_ctx_t *ctx, pnglite_uint32 n){
     ctx->image_data += n;
 }
 
+static int pnglite__compute_transparency16(pnglite__png_t *png, pnglite_us tc[3], pnglite_uint32 out_n){
+    pnglite_ctx_t *ctx = png->ctx;
+    pnglite_uint32 i, pixel_count = ctx->image_x * ctx->image_y;
+    pnglite_us *p = (pnglite_us*)png->out;
+
+    if(out_n == 2){
+        for(i = 0; i < pixel_count; ++i){
+            p[1] = (p[0] == tc[0] ? 0 : 65535);
+            p += 2;
+        }
+    } else {
+        for(i = 0; i < pixel_count; ++i){
+            if(p[0] == tc[0] && p[1] == tc[1] && p[2] == tc[2]){
+                p[3] = 0;
+            }
+            p += 4;
+        }
+    }
+
+    return 1;
+}
+
+static int pnglite__compute_transparency(pnglite__png_t *png, pnglite_uc tc[3], pnglite_uint32 out_n){
+    pnglite_ctx_t *ctx = png->ctx;
+    pnglite_uint32 i, pixel_count = ctx->image_x * ctx->image_y;
+    pnglite_uc *p = png->out;
+
+    if(out_n == 2){
+        for(i = 0; i < pixel_count; ++i){
+            if(p[0] == tc[0] && p[1] == tc[1] && p[2] == tc[2]){
+                p[3] = 0;
+            }
+            p += 4;
+        }
+    }
+
+    return 1;
+}
+
+static int pnglite__expand_palette(pnglite__png_t *png, pnglite_uc *palette, pnglite_uint32 len, pnglite_uint32 pal_image_n){
+    pnglite_uint32 i, pixel_count = png->ctx->image_x * png->ctx->image_y;
+    pnglite_uc *p, *temp_out, *original = png->out;
+
+    p = (pnglite_uc*)PNGLITE_MALLOC(pixel_count * pal_image_n + 0);
+    if(p == NULL) return pnglite__err("out of memory!");
+
+    temp_out = p;
+
+    if(pal_image_n == 3){
+        for(i = 0; i < pixel_count; ++i){
+            pnglite_uint32 n = original[i] * 4;
+            p[0] = palette[n];
+            p[1] = palette[n + 1];
+            p[2] = palette[n + 2];
+            p += 3;
+        }
+    } else {
+        for(i = 0; i < pixel_count; ++i){
+            pnglite_uint32 n = original[i] * 4;
+            p[0] = palette[n];
+            p[1] = palette[n + 1];
+            p[2] = palette[n + 2];
+            p[3] = palette[n + 3];
+            p += 4;
+        }
+    }
+
+    PNGLITE_FREE(png->out); png->out = temp_out;
+
+    return 1;
+}
+
+static const pnglite_uc pnglite__depth_scale_table[9] = { 0, 0xFF, 0x55, 0, 0x11, 0, 0, 0, 0x01 };
+
 static int pnglite__parse_png(pnglite__png_t *png, pnglite_uint32 scan, pnglite_uint32 requested_components){
     pnglite_ctx_t *ctx = png->ctx;
 
     pnglite_uc color = 0;
     pnglite_uc filter = 0;
     pnglite_uc interlace = 0;
+    pnglite_uc palette[1024], pal_image_n = 0;
+    pnglite_uc has_tRNS = 0, tc[3];
+    pnglite_us tc16[3];
 
     pnglite_uint32 ioff = 0;
     pnglite_uint32 idata_limit = 0;
+    pnglite_uint32 palette_len = 0;
 
     png->expanded = NULL;
     png->idata = NULL;
@@ -125,14 +203,22 @@ static int pnglite__parse_png(pnglite__png_t *png, pnglite_uint32 scan, pnglite_
                 ctx->image_y = pnglite__get32be(ctx);
                 png->depth = pnglite__get8(ctx);
                 color = pnglite__get8(ctx);
+                if(color == 3) pal_image_n = 3; else if(color & 1) return pnglite__err("bad ctype!");
                 filter = pnglite__get8(ctx);
                 compression = pnglite__get8(ctx);
                 interlace = pnglite__get8(ctx);
-                ctx->image_n = (color & 2 ? 3 : 1) + (color & 4 ? 1 : 0);
+                if(!pal_image_n){
+                    ctx->image_n = (color & 2 ? 3 : 1) + (color & 4 ? 1 : 0);
+                    if(scan == PNGLITE__SCAN_header) return 1;
+                } else {
+                    ctx->image_n = 1;
+                }
                 break;
             }
 
             case PNGLITE__CHUNK_TYPE('I', 'D', 'A', 'T'): {
+                if(pal_image_n && !palette_len) return pnglite__err("no PLTE!");
+                if(scan == PNGLITE__SCAN_header) { ctx->image_n = pal_image_n; return 1; }
                 if (((int)ioff + chunk.length) < (int)ioff) return 0;
                 if(ioff + chunk.length > idata_limit){
                     pnglite_uint32 idata_limit_old = idata_limit;
@@ -162,9 +248,68 @@ static int pnglite__parse_png(pnglite__png_t *png, pnglite_uint32 scan, pnglite_
 
                 ctx->image_out_n = ctx->image_n;
 
+                if((requested_components == ctx->image_n + 1 && requested_components != 3 && !pal_image_n) || has_tRNS){
+                    ctx->image_out_n = ctx->image_n + 1;
+                } else {
+                    ctx->image_out_n = ctx->image_n;
+                }
+
                 if(!pnglite__create_png_image(png, png->expanded, raw_len, ctx->image_out_n, png->depth, color)) return 0;
+                if(has_tRNS){
+                    if(png->depth == 16){
+                        if(!pnglite__compute_transparency16(png, tc16, ctx->image_out_n)) return 0;
+                    } else {
+                        if(!pnglite__compute_transparency(png, tc, ctx->image_out_n)) return 0;
+                    }
+                }
+
+                if(pal_image_n){
+                    ctx->image_n = pal_image_n;
+                    ctx->image_out_n = pal_image_n;
+
+                    if(requested_components >= 3) ctx->image_out_n = requested_components;
+                    if(!pnglite__expand_palette(png, palette, palette_len, ctx->image_out_n)) return 0;
+                } else if(has_tRNS){
+                    ++ctx->image_n;
+                }
+
                 PNGLITE_FREE(png->expanded); png->expanded = NULL;
+
                 return 1;
+            }
+
+            case PNGLITE__CHUNK_TYPE('P', 'L', 'T', 'E'): {
+                if(chunk.length > 256 * 3) return pnglite__err("invalid PLTE chunk!");
+                palette_len = chunk.length / 3;
+                if(palette_len * 3 != chunk.length) return pnglite__err("invalid PLTE chunk!");
+                for(pnglite_uint32 i = 0; i < palette_len; ++i){
+                    palette[i * 4 + 0] = pnglite__get8(ctx);
+                    palette[i * 4 + 1] = pnglite__get8(ctx);
+                    palette[i * 4 + 2] = pnglite__get8(ctx);
+                    palette[i * 4 + 3] = 255;
+                }
+                break;
+            }
+
+            case PNGLITE__CHUNK_TYPE('t', 'R', 'N', 'S'): {
+                if(png->idata) return pnglite__err("tRNS after IDAT!");
+                if(pal_image_n){
+                    if(scan == PNGLITE__SCAN_header) { ctx->image_n = 4; return 1; }
+                    if(palette_len == 0) return pnglite__err("tRNS before PLTE!");
+                    if(chunk.length > palette_len) return pnglite__err("bad tRNS length!");
+                    pal_image_n = 4;
+                    for(pnglite_uint32 i = 0; i < chunk.length; ++i){
+                        palette[i * 4 + 3] = pnglite__get8(ctx);
+                    }
+                } else {
+                    if(chunk.length != (pnglite_uint32)ctx->image_n * 2) return pnglite__err("bad tRNS length!");
+                    has_tRNS = 1;
+                    if(png->depth == 16){
+                        for(pnglite_uint32 k = 0; k < ctx->image_n; ++k) tc16[k] = (pnglite_us)pnglite__get16be(ctx);
+                    } else {
+                        for(pnglite_uint32 k = 0; k < ctx->image_n; ++k) tc[k] = (pnglite_uc)(pnglite__get16be(ctx) & 255) * pnglite__depth_scale_table[png->depth];
+                    }
+                }
             }
 
             default: {
@@ -540,8 +685,6 @@ PNGLITEDEF char *pnglite_zlib_decode_malloc_guessize_headerflag(const char *buff
     }
 }
 
-static const pnglite_uc pnglite__depth_scale_table[9] = { 0, 0xFF, 0x55, 0, 0x11, 0, 0, 0, 0x01 };
-
 static int pnglite__create_png_image_raw(pnglite__png_t* png, pnglite_uc *raw, pnglite_uint32 raw_len, int out_n, pnglite_uint32 x, pnglite_uint32 y, int depth, int color){
     int bytes = (depth == 16 ? 2 : 1);
     pnglite_ctx_t *s = png->ctx;
@@ -765,6 +908,8 @@ static void *pnglite__do_png(pnglite__png_t *png, pnglite_uint32 *x, pnglite_uin
         if(requested_components && requested_components != png->ctx->image_n){
             if(result_info->bits_per_channel == 8){
                 result = pnglite__convert_format((pnglite_uc*)result, png->ctx->image_out_n, requested_components, png->ctx->image_x, png->ctx->image_y);
+            } else {
+                result = pnglite__convert_format16((pnglite_us*)result, png->ctx->image_out_n, requested_components, png->ctx->image_x, png->ctx->image_y);
             }
 
             png->ctx->image_out_n = requested_components;
@@ -784,7 +929,11 @@ static void *pnglite__do_png(pnglite__png_t *png, pnglite_uint32 *x, pnglite_uin
 }
 
 static pnglite_uc pnglite__compute_y(int r, int g, int b){
-    return (pnglite_uc)(((r * 77) + (g * 150) +  (b * 29)) >> 8);
+    return (pnglite_uc)(((r * 77) + (g * 150) + (b * 29)) >> 8);
+}
+
+static pnglite_us pnglite__compute_y16(int r, int g, int b){
+    return (pnglite_us)(((r * 77) + (g * 150) + (b * 29)) >> 8);
 }
 
 static int pnglite__paeth(int a, int b, int c){
@@ -797,6 +946,36 @@ static int pnglite__paeth(int a, int b, int c){
     if(pb <= pc) return b;
 
     return c;
+}
+
+static pnglite_us *pnglite__load_16bit(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
+    pnglite__result_info_t result_info;
+    void *result = pnglite__load_main(ctx, x, y, components, requested_components, &result_info);
+
+    if(result == NULL) return NULL;
+
+    if(result_info.bits_per_channel != 16){
+        result = pnglite__convert_8_to_16((pnglite_uc*)result, *x, *y, requested_components == 0 ? *components : requested_components);
+        result_info.bits_per_channel = 16;
+    }
+
+    return (pnglite_us*)result;
+}
+
+static pnglite_us *pnglite__convert_8_to_16(pnglite_uc *original, pnglite_uint32 width, pnglite_uint32 height, pnglite_uint32 channels){
+    pnglite_uint32 i;
+    pnglite_uint32 image_len = width * height * channels;
+
+    pnglite_us *enlarged;
+
+    enlarged = (pnglite_us*)PNGLITE_MALLOC(image_len * 2);
+
+    for(i = 0; i < image_len; ++i){
+        enlarged[i] = (pnglite_us)((original[i] << 8) + original[i]);
+    }
+
+    PNGLITE_FREE(original);
+    return enlarged;
 }
 
 static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_n, pnglite_uint32 requested_components, pnglite_uint32 x, pnglite_uint32 y){
@@ -865,26 +1044,26 @@ static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_
 
                 case 3*8 + 1:
                     for (i = x; i > 0; --i, src += 3, dest += 1) {
-                        dest[0] = pnglite__compute_y(src[0], src[1], src[2]);
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
                     }
                     break;
 
                 case 3*8 + 2:
                     for (i = x; i > 0; --i, src += 3, dest += 2) {
-                        dest[0] = pnglite__compute_y(src[0], src[1], src[2]);
-                        dest[1] = 255;
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
+                        dest[1] = 0xFFFF;
                     }
                     break;
 
                 case 4*8 + 1:
                     for (i = x; i > 0; --i, src += 4, dest += 1) {
-                        dest[0] = pnglite__compute_y(src[0], src[1], src[2]);
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
                     }
                     break;
 
                 case 4*8 + 2:
                     for (i = x; i > 0; --i, src += 4, dest += 2) {
-                        dest[0] = pnglite__compute_y(src[0], src[1], src[2]);
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
                         dest[1] = src[3];
                     }
                     break;
@@ -904,10 +1083,121 @@ static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_
     return good;
 }
 
-PNGLITEDEF pnglite_uc* pnglite_load_from_memory(pnglite_uc* buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
+static pnglite_us *pnglite__convert_format16(pnglite_us *data, pnglite_uint32 img_n, pnglite_uint32 requested_components, pnglite_uint32 x, pnglite_uint32 y){
+    pnglite_uint32 i, j;
+    pnglite_us *good;
+
+    if (requested_components == img_n) return data;
+
+    good = (pnglite_us*)PNGLITE_MALLOC(requested_components * x * y + 0);
+
+    pnglite_uint32 combo = img_n * 8 + requested_components;
+
+    for(j = 0; j < y; ++j){
+        pnglite_us *src = data + j * x * img_n;
+        pnglite_us *dest = good + j * x * requested_components;
+
+        switch(combo){
+            switch(combo){
+                case 1*8 + 2:
+                    for (i = x; i > 0; --i, src += 1, dest += 2) {
+                        dest[0] = src[0];
+                        dest[1] = 0xFFFF;
+                    }
+                    break;
+
+                case 1*8 + 3:
+                    for (i = x; i > 0; --i, src += 1, dest += 3) {
+                        dest[0] = dest[1] = dest[2] = src[0];
+                    }
+                    break;
+
+                case 1*8 + 4:
+                    for (i = x; i > 0; --i, src += 1, dest += 4) {
+                        dest[0] = dest[1] = dest[2] = src[0];
+                        dest[3] = 0xFFFF;
+                    }
+                    break;
+
+                case 2*8 + 1:
+                    for (i = x; i > 0; --i, src += 2, dest += 1) {
+                        dest[0] = src[0];
+                    }
+                    break;
+
+                case 2*8 + 3:
+                    for (i = x; i > 0; --i, src += 2, dest += 3) {
+                        dest[0] = dest[1] = dest[2] = src[0];
+                    }
+                    break;
+
+                case 2*8 + 4:
+                    for (i = x; i > 0; --i, src += 2, dest += 4) {
+                        dest[0] = dest[1] = dest[2] = src[0];
+                        dest[3] = src[1];
+                    }
+                    break;
+
+                case 3*8 + 4:
+                    for (i = x; i > 0; --i, src += 3, dest += 4) {
+                        dest[0] = src[0];
+                        dest[1] = src[1];
+                        dest[2] = src[2];
+                        dest[3] = 0xFFFF;
+                    }
+                    break;
+
+                case 3*8 + 1:
+                    for (i = x; i > 0; --i, src += 3, dest += 1) {
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
+                    }
+                    break;
+
+                case 3*8 + 2:
+                    for (i = x; i > 0; --i, src += 3, dest += 2) {
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
+                        dest[1] = 255;
+                    }
+                    break;
+
+                case 4*8 + 1:
+                    for (i = x; i > 0; --i, src += 4, dest += 1) {
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
+                    }
+                    break;
+
+                case 4*8 + 2:
+                    for (i = x; i > 0; --i, src += 4, dest += 2) {
+                        dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
+                        dest[1] = src[3];
+                    }
+                    break;
+
+                case 4*8 + 3:
+                    for (i = x; i > 0; --i, src += 4, dest += 3) {
+                        dest[0] = src[0];
+                        dest[1] = src[1];
+                        dest[2] = src[2];
+                    }
+                    break;
+            }
+        }
+    }
+
+    PNGLITE_FREE(data);
+    return good;
+}
+
+PNGLITEDEF pnglite_uc *pnglite_load_from_memory(pnglite_uc *buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
     pnglite_ctx_t ctx;
     pnglite__ctx_init(&ctx, buffer, len);
     return pnglite__load_8bit(&ctx, x, y, components, requested_components);
+}
+
+PNGLITEDEF pnglite_us *pnglite_load_16_from_memory(pnglite_uc *buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
+    pnglite_ctx_t ctx;
+    pnglite__ctx_init(&ctx, buffer, len);
+    return pnglite__load_16bit(&ctx, x, y, components, requested_components);
 }
 
 PNGLITEDEF pnglite_uc *pnglite_load(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){

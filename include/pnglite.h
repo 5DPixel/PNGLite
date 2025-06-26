@@ -223,6 +223,13 @@ static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_
 static int pnglite__getn(pnglite_ctx_t *ctx, pnglite_uc *buffer, pnglite_uint32 n);
 static pnglite_uc pnglite__compute_y(int r, int g, int b);
 static int pnglite__paeth(int a, int b, int c);
+static pnglite_us *pnglite__load_16bit(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+static pnglite_us *pnglite__convert_8_to_16(pnglite_uc *original, pnglite_uint32 width, pnglite_uint32 height, pnglite_uint32 channels);
+static int pnglite__compute_transparency(pnglite__png_t *png, pnglite_uc tc[3], pnglite_uint32 out_n);
+static int pnglite__compute_transparency16(pnglite__png_t *png, pnglite_us tc[3], pnglite_uint32 out_n);
+static int pnglite__expand_palette(pnglite__png_t *png, pnglite_uc *palette, pnglite_uint32 len, pnglite_uint32 pal_image_n);
+static pnglite_us *pnglite__convert_format16(pnglite_us *data, pnglite_uint32 img_n, pnglite_uint32 requested_components, pnglite_uint32 x, pnglite_uint32 y);
+static pnglite_us pnglite__compute_y16(int r, int g, int b);
 
 pnglite_inline static pnglite_uc *pnglite__load_8bit(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 pnglite_inline static pnglite_uc pnglite__get8(pnglite_ctx_t *ctx);
@@ -237,6 +244,7 @@ PNGLITEDEF pnglite_uc* pnglite_load_from_memory(pnglite_uc* buffer, pnglite_uint
 PNGLITEDEF pnglite_uc *pnglite_load(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 PNGLITEDEF char *pnglite_zlib_decode_malloc_guessize_headerflag(const char *buffer, int len, int initial_size, int *outlen, int parse_header);
+PNGLITEDEF pnglite_us *pnglite_load_16_from_memory(pnglite_uc *buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 
 #ifdef __cplusplus
 }

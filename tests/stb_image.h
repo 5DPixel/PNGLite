@@ -4346,11 +4346,12 @@ static int stbi__create_png_image_raw(stbi__png *a, stbi_uc *raw, stbi__uint32 r
 
    if (!stbi__mad3sizes_valid(img_n, x, depth, 7)) return stbi__err("too large", "Corrupt PNG");
    img_width_bytes = (((img_n * x * depth) + 7) >> 3);
-   img_len = (img_width_bytes + 1) * y;
+  img_len = (img_width_bytes + 1) * y;
 
    // we used to check for exact match between raw_len and img_len on non-interlaced PNGs,
    // but issue #276 reported a PNG in the wild that had extra data at the end (all zeros),
    // so just check for raw_len < img_len always.
+   printf("stb raw len: %u, stb img len: %u\n", raw_len, img_len);
    if (raw_len < img_len) return stbi__err("not enough pixels","Corrupt PNG");
 
    for (j=0; j < y; ++j) {
