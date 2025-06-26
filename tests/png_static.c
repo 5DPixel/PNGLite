@@ -1,7 +1,5 @@
 #include <pnglite.h>
 #include <stdint.h>
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 int main(){
     const char *filename = "../tests/wallpaper_plte.png";
