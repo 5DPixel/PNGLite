@@ -15,7 +15,7 @@ static pnglite__chunk_t pnglite__get_chunk_header(pnglite_ctx_t *ctx){
 }
 
 static int pnglite__check_png_header(pnglite_ctx_t* ctx){
-    static const pnglite_uc png_signature[8] = { 137,80,78,71,13,10,26,10 };
+    static const pnglite_uc png_signature[8] = { 137, 80, 78, 71, 13, 10, 26, 10 };
     for(pnglite_uint32 i = 0; i < 8; i++){
         if (pnglite__get8(ctx) != png_signature[i]) return pnglite__err("incorrect png signature!");
     }
@@ -68,6 +68,17 @@ static pnglite_us pnglite__get16be(pnglite_ctx_t *ctx){
 static pnglite_uint32 pnglite__get32be(pnglite_ctx_t *ctx){
     pnglite_us us = pnglite__get16be(ctx);
     return ((pnglite_uint32)us << 16) + pnglite__get16be(ctx);
+}
+
+static pnglite_us pnglite__get16le(pnglite_ctx_t *ctx){
+    pnglite_uc uc = pnglite__get8(ctx);
+    return (pnglite_us)uc + (pnglite_us)(pnglite__get8(ctx) << 8);
+}
+
+static pnglite_uint32 pnglite__get32le(pnglite_ctx_t *ctx){
+    pnglite_us us = pnglite__get16le(ctx);
+
+    return (pnglite_uint32)us + (pnglite_uint32)(pnglite__get16le(ctx) << 16);
 }
 
 pnglite_inline static pnglite_uc *pnglite__load_8bit(pnglite_ctx_t *ctx, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
@@ -214,7 +225,7 @@ static int pnglite__parse_png(pnglite__png_t *png, pnglite_uint32 scan, pnglite_
                     ctx->image_n = 1;
                 }
                 break;
-            }
+             }
 
             case PNGLITE__CHUNK_TYPE('I', 'D', 'A', 'T'): {
                 if(pal_image_n && !palette_len) return pnglite__err("no PLTE!");
@@ -1051,7 +1062,7 @@ static pnglite_uc *pnglite__convert_format(pnglite_uc *data, pnglite_uint32 img_
                 case 3*8 + 2:
                     for (i = x; i > 0; --i, src += 3, dest += 2) {
                         dest[0] = pnglite__compute_y16(src[0], src[1], src[2]);
-                        dest[1] = 0xFFFF;
+                        dest[1] = 255;
                     }
                     break;
 
@@ -1200,6 +1211,7 @@ PNGLITEDEF pnglite_us *pnglite_load_16_from_memory(pnglite_uc *buffer, pnglite_u
     return pnglite__load_16bit(&ctx, x, y, components, requested_components);
 }
 
+#ifndef PNGLITE_NO_STDIO
 PNGLITEDEF pnglite_uc *pnglite_load(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
     FILE *f = fopen(filename, "rb");
     if(!f){
@@ -1225,7 +1237,7 @@ PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglit
     long file_size = ftell(f);
     fseek(f, 0, SEEK_SET);
 
-    pnglite_uc *buffer = PNGLITE_MALLOC(file_size);
+    pnglite_uc *buffer = (pnglite_uc*)PNGLITE_MALLOC(file_size);
     size_t read_size = fread(buffer, 1, file_size, f);
     if (read_size != file_size) {
         pnglite__err("failed to read full file!");
@@ -1233,7 +1245,7 @@ PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglit
         return NULL;
     }
 
-    result = pnglite__load_8bit(&ctx, x, y, components, requested_components);
+    result = pnglite_load_from_memory(buffer, read_size, x, y, components, requested_components);
     if (!result) {
         pnglite__err("failed to load PNG from memory!");
         free(buffer);
@@ -1242,3 +1254,45 @@ PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglit
 
     return result;
 }
+PNGLITEDEF pnglite_us *pnglite_load_16_from_file(FILE *f, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
+    pnglite_us *result;
+    pnglite_ctx_t ctx;
+
+    if (!f) {
+        pnglite__err("file pointer is NULL!");
+        return NULL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    pnglite_uc *buffer = (pnglite_uc*)PNGLITE_MALLOC(file_size);
+    size_t read_size = fread(buffer, 1, file_size, f);
+    if (read_size != file_size) {
+        pnglite__err("failed to read full file!");
+        free(buffer);
+        return NULL;
+    }
+
+    result = pnglite_load_16_from_memory(buffer, read_size, x, y, components, requested_components);
+    if (!result) {
+        pnglite__err("failed to load PNG from memory!");
+        free(buffer);
+        return NULL;
+    }
+
+    return result;
+}
+PNGLITEDEF pnglite_us *pnglite_load_16(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components){
+    FILE *f = fopen(filename, "rb");
+    if(!f){
+        pnglite__err("failed to open file!");
+    }
+
+    pnglite_us *result;
+    result = pnglite_load_16_from_file(f, x, y, components, requested_components);
+    fclose(f);
+    return result;
+}
+#endif

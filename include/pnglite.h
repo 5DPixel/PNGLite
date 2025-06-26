@@ -194,6 +194,11 @@ typedef struct pnglite__zbuf {
     pnglite__zhuffman_t z_length, z_distance;
 } pnglite__zbuf_t;
 
+typedef struct pnglite__bmp_data {
+    int bpp, offset, header_size;
+    pnglite_uint32 mask_red, mask_green, mask_blue, mask_alpha, all_a;
+} pnglite__bmp_data_t;
+
 static const char *pnglite__failure_reason;
 
 static void pnglite__ctx_init(pnglite_ctx_t *ctx, pnglite_uc *buffer, pnglite_uint32 len);
@@ -239,10 +244,16 @@ pnglite_inline static int pnglite__bitreverse16(int n);
 pnglite_inline static int pnglite__bit_reverse(int v, int bits);
 static pnglite_us pnglite__get16be(pnglite_ctx_t *ctx);
 static pnglite_uint32 pnglite__get32be(pnglite_ctx_t *ctx);
+static pnglite_us pnglite__get16le(pnglite_ctx_t *ctx);
+static pnglite_uint32 pnglite__get32le(pnglite_ctx_t *ctx);
 
 PNGLITEDEF pnglite_uc* pnglite_load_from_memory(pnglite_uc* buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+#ifndef PNGLITE_NO_STDIO
 PNGLITEDEF pnglite_uc *pnglite_load(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 PNGLITEDEF pnglite_uc *pnglite_load_from_file(FILE *f, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+PNGLITEDEF pnglite_us *pnglite_load_16_from_file(FILE *f, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+PNGLITEDEF pnglite_us *pnglite_load_16(const char *filename, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
+#endif
 PNGLITEDEF char *pnglite_zlib_decode_malloc_guessize_headerflag(const char *buffer, int len, int initial_size, int *outlen, int parse_header);
 PNGLITEDEF pnglite_us *pnglite_load_16_from_memory(pnglite_uc *buffer, pnglite_uint32 len, pnglite_uint32 *x, pnglite_uint32 *y, pnglite_uint32 *components, pnglite_uint32 requested_components);
 
