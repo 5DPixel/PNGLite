@@ -9,7 +9,7 @@ PNGLite is a simple, lightweight C library for decoding PNG images with no depen
 
 # Building from source
 ## Requirements
-- A C compiler supporting the C99 standard or later (for example, gcc or clang)
+- A C compiler supporting the C99 standard or later (for example, [gcc](https://gcc.gnu.org/install/download.html) or [clang](https://releases.llvm.org/download.html))
 - CMake (get it at [CMake](https://cmake.org))
 
 Compile with:
